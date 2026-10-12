@@ -13,7 +13,7 @@ Learning-based 2D/3D registration of a preoperative CT to intraoperative fluoros
 
 ### 1. TAVI: DRR generation with simulated instruments
 
-![TAVI instruments simulation](assets/tavi_instruments_simulation.png)
+![TAVI instruments simulation](assets/instruments.png)
 
 Training pairs are synthesized from a CT volume in four steps:
 
@@ -27,7 +27,7 @@ Training pairs are synthesized from a CT volume in four steps:
 
 ### 2. Spine: cascaded registration pipeline
 
-![Spine registration pipeline](assets/spine_pipeline.png)
+![Spine registration pipeline](assets/pipeline_full.png)
 
 - **CT masking.** The CT is reduced to the spine (bone segmentation, then masked volume) before DRR rendering.
 - **Bone extraction model.** An HRNet-based network predicts a bone-only image from the input X-ray, trained with a gradient-NCC loss (`L_gradNCC`) against the bone DRR.
