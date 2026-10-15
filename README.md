@@ -55,14 +55,6 @@ Training data are synthesized from a CT volume in four steps:
 
 ## Installation
 
-```bash
-git clone <repository-url>
-cd <repository-name>
-
-conda create -n ct2fluoro python=3.10
-conda activate ct2fluoro
-pip install -r requirements.txt
-```
 
 ---
 
@@ -89,4 +81,3 @@ python test_TAVI_multi_patients.py
 
 ## Contact
 
-Federica — Inria
