@@ -73,7 +73,7 @@ python test_TAVI_multi_patients.py
 
 ## Streamlit annotation app (TAVI)
 
-`tavi_annotation_app/diffdrr_annotation_tavi.py` is a [Streamlit](https://streamlit.io/) app to manually annotate the CT-to-fluoroscopy pose on TAVI cases. [DiffDRR](https://github.com/eigenvivek/DiffDRR) renders a DRR from the CT at the pose set by the user, which is compared with the fluoroscopy frame until the vertebrae are aligned.
+`tavi_annotation_app/diffdrr_annotation_tavi.py` is a [Streamlit](https://streamlit.io/) app to manually annotate the CT-to-fluoroscopy pose. [DiffDRR](https://github.com/eigenvivek/DiffDRR) renders a DRR from the CT at the pose set by the user, which is compared with the fluoroscopy frame until the vertebrae are aligned.
 
 ![Streamlit annotation interface](assets/dataset.png)
 
