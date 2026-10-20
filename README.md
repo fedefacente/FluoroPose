@@ -20,11 +20,10 @@ Training data are synthesized from a CT volume in four steps:
   - *Valve*: a stent-like mesh defined by three radii (`r1`, `r2`, `r3`), a waist height and an overall height.
 - **D) DRR generation.** The simulated instruments are inserted into the CT volume, and the X-ray simulator renders a DRR with instruments, which goes into the training set.
 
-### 2. Cascaded registration pipeline
+### 2. FluoroPose pipeline
 
 ![Spine registration pipeline](assets/pipeline_full.png)
 
-- **CT masking.** The CT is reduced to the spine (bone segmentation, then masked volume) before DRR rendering.
 - **BonesHRNet.** An HRNet-based network predicts a bones representation image from the input X-ray, trained with a gradient-NCC loss (`L_gradNCC`) against the bone DRR.
 - **Pose regressor.** Regresses an initial pose `P_init` from the predicted bone representation image, trained with a mean projection distance loss (`L_mPD₁`) against `P_GT`.
 - **Registration model.** Takes the predicted bones and the DRR at `P_init`, and regresses a pose correction `P_Δ`, trained with `L_mPD₂`. The final pose is `P̂`, obtained by composing `P_init` with `P_Δ`.
