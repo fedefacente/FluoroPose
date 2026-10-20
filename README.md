@@ -14,10 +14,7 @@ Training data are synthesized from a CT volume in four steps:
 
 - **A) 3D aorta centerline.** The centerline is extracted from the segmented aorta.
 - **B) 3D centerline displacement.** The centerline is displaced in 3D to vary the instrument trajectory inside the vessel.
-- **C) Instruments simulation.** Instruments are generated parametrically along the centerline:
-  - *Catheter*: follows the centerline.
-  - *Guidewire*: a straight segment (tangent `tg`, normal `n`, max length) followed by a distal curve.
-  - *Valve*: a stent-like mesh defined by three radii (`r1`, `r2`, `r3`), a waist height and an overall height.
+- **C) Instruments simulation.** Instruments are generated parametrically along the centerline.
 - **D) DRR generation.** The simulated instruments are inserted into the CT volume, and the X-ray simulator renders a DRR with instruments, which goes into the training set.
 
 ### 2. FluoroPose pipeline
