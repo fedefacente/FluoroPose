@@ -31,7 +31,7 @@ Training data are synthesized from a CT volume in four steps:
 
 | Path | Description |
 |---|---|
-| `CTpreprocessing/` | CT preprocessing scripts (segmentation, cropping, masking) |
+| `CT_annotation/` | Everything needed to obtain the CT annotations required to run the full pipeline |
 | `tavi_annotation_app/` | Streamlit app for interactive CT-to-fluoroscopy manual annotation |
 | `hu_to_mu.py` | Conversion of CT Hounsfield units to linear attenuation coefficients for DRR rendering |
 | `instruments_vol_generation.py` | Generation of CT volumes containing the simulated instruments |
@@ -55,18 +55,17 @@ Training data are synthesized from a CT volume in four steps:
 Suggested order for a full run:
 
 ```bash
-# 1. Preprocess the CT volumes
 
-# 2. Simulate instruments and generate the volumes (TAVI)
+# 1. Simulate instruments and generate the volumes (TAVI)
 python intruments_vol_generation.py
 
-# 3. Train the bone extraction model
+# 2. Train the bone extraction model
 python train_bones.py
 
-# 4. Train the cascaded pose regressor / registration models
+# 3. Train the cascaded pose regressor / registration models
 python train_cascade_encoder_decoder.py
 
-# 5. Evaluate on multiple patients (TAVI)
+# 4. Evaluate on multiple patients (TAVI)
 python test_TAVI_multi_patients.py
 ```
 ---
