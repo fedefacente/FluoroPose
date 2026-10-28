@@ -34,8 +34,8 @@ Training data are synthesized from a CT volume in four steps:
 | `CT_annotation/` | Everything needed to obtain the CT annotations required to run the full pipeline |
 | `tavi_annotation_app/` | Streamlit app for interactive CT-to-fluoroscopy manual annotation |
 | `hu_to_mu.py` | Conversion of CT Hounsfield units to linear attenuation coefficients for DRR rendering |
-| `instruments_vol_generation.py` | Generation of CT volumes containing the simulated instruments |
 | `simulation_instruments_TAVI.py` | Parametric simulation of catheter, guidewire and valve along the aortic centerline |
+| `instruments_vol_generation.py` | Generation of CT volumes containing the simulated instruments needed for training|
 | `models.py` | Network architectures (HRNet bone extraction, pose regressor, registration model) |
 | `train_bones.py` | Training of the bone extraction model |
 | `train_cascade_encoder_decoder.py` | Training of the cascaded pose regression / registration models |
