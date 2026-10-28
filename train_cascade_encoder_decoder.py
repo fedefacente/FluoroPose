@@ -35,12 +35,7 @@ parser.add_argument("--id", type=str, default="0f7f6475")
 args = parser.parse_args()
 id = args.id
 # performance = wandb.init(project="Points", name=f'specimen{id}_points_500', mode = 'offline')
-def transform_hu_to_density(volume):
-    volume = volume.float()
-    density = volume.clamp(min=-800)
-    density -= density.min()
-    density /= density.max()
-    return density
+
 
 def generate_pytorch_catheter_batch(batch_size=16, img_size=256, num_samples=200, device='cuda'):
     """
@@ -89,8 +84,8 @@ def generate_pytorch_catheter_batch(batch_size=16, img_size=256, num_samples=200
 
 
 def train(
-        model,
-        reg_model1,
+        regressor,
+        registration_model,
         bones_model,
         optimizer,
         scheduler,
@@ -112,17 +107,6 @@ def train(
         start_epoch,
         t_iso):
     torch.cuda.empty_cache()
-    geodesic = GeodesicSE3().to(device)
-    n_batches_per_epoch_val = 2
-    #double = DoubleGeodesic(1020).to(device)
-    min_delta = 0.01
-    patience = 8
-    best_loss = np.inf  # init to infinity
-    #ncc = MultiscaleNormalizedCrossCorrelation2d([None, 16], [0.5, 0.5]).to(device)
-    #ncc =  GradientNormalizedCrossCorrelation2d().to(device)
-    ncc =  NormalizedCrossCorrelation2d().to(device)
-    ssim =  SSIMLoss(5)
-    contrast_distribution = torch.distributions.Uniform(1.0, 10.0)
     i = 0
     volume_anatomy = drr.subject.volume.data.to(device)
     mapper = AttenuationMapperRatio().to('cuda').eval()
@@ -130,28 +114,17 @@ def train(
     for epoch in range(start_epoch,n_epochs + 1):
         losses = []
         loss_cnn1 = []
-        loss_cnn3 = []
+        loss_cnn2 = []
         losses_val = []
-        #ncc1mean = []
-        #ncc2mean = []
-        model.train()
-        reg_model1.train()
+    
+        regressor.train()
+        registration_model.train()
         bones_model.eval()
-        mae_loss = nn.L1Loss(reduction='none')
-        geodesic = DoubleGeodesicSE3(sdd = 1125)
+
         for _ in (itr := tqdm(range(n_batches_per_epoch), leave=False)):
 
             sid = -820.0
             torch.manual_seed(torch.seed())
-
-            #rx = torch.FloatTensor(batch_size, 1).uniform_(-0.7, 0.7).to(device)
-            #ry = torch.FloatTensor(batch_size, 1).uniform_(-0.3, 0.3).to(device)
-            #rz = torch.FloatTensor(batch_size, 1).uniform_(-0.7, 0.7).to(device)
-            #rot = torch.cat([rx, ry, rz], dim=1).to(device)
-
-            #tx = torch.FloatTensor(batch_size, 1).uniform_(-100, 100).to(device)
-            #ty = torch.FloatTensor(batch_size, 1).uniform_(-150, 150).to(device)
-            #tz = torch.FloatTensor(batch_size, 1).uniform_(-100, 100).to(device)
 
             rx = torch.normal(mean=0.0, std=0.4, size=(batch_size, 1)).to(device)
             ry = torch.normal(mean=0.0, std=0.2, size=(batch_size, 1)).to(device)
@@ -166,9 +139,6 @@ def train(
             xyz =xyz  + torch.tensor([np.float32(t_iso[0]), np.float32(sid), np.float32(t_iso[2])], dtype=tx.dtype,device=tx.device)
 
 
-            # if torch.rand(1).item() > 0.5:
-            #     drr.density = transform_hu_to_density(drr.subject.volume.data).to(device).squeeze(0)
-
             with torch.no_grad():
                 try:
                     instruments = next(instrument_iter)
@@ -178,39 +148,17 @@ def train(
                     instruments = next(instrument_iter)
 
                 instruments = instruments.to(device, non_blocking=True).float().squeeze(0)
-                # volume = torch.where(instruments > 0, instruments, volume_anatomy)
-                # drr.density = transform_hu_to_density(volume).squeeze(0)
-
-                # drr_catheter.density = transform_hu_to_density(instruments).squeeze(0)
-                # catheter = drr_catheter(rot, xyz, parameterization='axis_angle', convention=None)
-                # catheter = transforms(catheter.sum(dim=1, keepdim=True))
-                # alpha = torch.rand(1, device=device).item() * 0.5
                 mu = mapper(volume_anatomy.clone(), instruments, dens=dens)
                 drr.density = mu.to(drr.density)
                 img = drr(rot, xyz, parameterization=parameterization, convention=convention)
                 img = transforms(img)
                 img = aug(img)
-                # catheter = generate_pytorch_catheter_batch(batch_size=1).unsqueeze(0)
-                # alpha = torch.rand(1, device=device).item() * 0.5
-                # img = torch.where(catheter > 0, catheter * alpha + img, img)
-                # img = torch.where(catheter > 0, catheter * alpha + img, img)
 
-
-            # if torch.rand(1).item() > 0.5:
-            #     max = (torch.rand(1, device=device) * 0.3) + 0.7
-            #     min = (torch.rand(1, device=device) * 0.3)
-            #     img = (img * (max - min)) + min
-            # with torch.no_grad():
-            #     bones_gt = drr_bones(rot, xyz, parameterization=parameterization, convention=convention)
-            #     bones_gt = transforms(bones_gt)
 
             with torch.no_grad():
                 _,_,bones = bones_model(img)
-            # bones = sobel(bones)
-            r,t = model(bones)
-
-            # loss_bones = 1- ms_ssim(bones, bones_gt, data_range=1)
-            #ssim_loss = ssim(bones, bones_gt)
+            bones = sobel(bones)
+            r,t = regressor(bones)
 
             T = t + torch.tensor([np.float32(t_iso[0]), np.float32((sid)), np.float32(t_iso[2])],
                                  dtype=tx.dtype, device=tx.device)
@@ -233,17 +181,14 @@ def train(
             points2d[~mask2d] = float('nan')
 
             mpd1 = ((points2d - points2d_pred).norm(dim=-1).nanmean()) * (0.4*512/256)
-            #geodesic_rot, geodesic_xyz, double_geodesic1 = double(pose, pose_pred)
-            #_,_,geodesic1 = geodesic(pose,pose_pred)
+
 
             with torch.no_grad():
                 init_pose = drr_bones(r, T, parameterization=parameterization, convention=convention)
             init_pose = transforms(init_pose.sum(dim=1, keepdim=True))
-            # init_pose = sobel(init_pose)
-            #ncc1 = 1 - ncc(init_pose,img)
-            # input2 = torch.cat((bones.detach(), init_pose), dim=1)
+            init_pose = sobel(init_pose)
             input2 = torch.cat((bones, init_pose), dim=1)
-            delta_r, delta_t = reg_model1(input2)
+            delta_r, delta_t = registration_model(input2)
 
             T = delta_t
 
@@ -266,24 +211,17 @@ def train(
             points2d[~mask2d] = float('nan')
             mpd2 = ((points2d - points2d_pred).norm(dim=-1).nanmean()) * (0.4*512/256)
 
-            #ncc2 = (1-ncc(final_pose,img))
             del img
-            #loss = loss3.mean() + 1e-2 * (geodesic_loss.mean() + double_geodesic.mean())
-            #reg = mae_loss(xyz[:, 1], T[:, 1])
-            #_,_,geodesic2 = geodesic(pose,pose_pred)
             loss = ( (mpd2.nanmean())) + ((mpd1.nanmean())) #+ ( (geodesic1.nanmean())) + ((geodesic2.nanmean())) #+ loss_bones.nanmean()
             optimizer.zero_grad()
             loss.mean().backward()
             adaptive_clip_grad_(bones_model.parameters())
-            adaptive_clip_grad_(reg_model1.parameters())
+            adaptive_clip_grad_(registration_model.parameters())
             optimizer.step()
             scheduler.step()
             losses.append(loss.mean().item())
             loss_cnn1.append(mpd1.mean().item())
-            #loss_cnn2.append(cnn2.mean().item())
-            loss_cnn3.append(mpd2.mean().item())
-            #ncc1mean.append(ncc1.mean().item())
-            #ncc2mean.append(ncc2.mean().item())
+            loss_cnn2.append(mpd2.mean().item())
 
             itr.set_description(f"Epoch [{epoch}/{n_epochs}]")
             itr.set_postfix(
@@ -291,24 +229,17 @@ def train(
             )
         losses = torch.tensor(losses)
         loss_cnn1 = torch.tensor(loss_cnn1)
-        #loss_cnn2 = torch.tensor(loss_cnn2)
-        loss_cnn3 = torch.tensor(loss_cnn3)
-        #ncc1mean= torch.tensor(ncc1mean)
-        #ncc2mean= torch.tensor(ncc2mean)
+        loss_cnn2 = torch.tensor(loss_cnn2)
+
 
         tqdm.write(f"Epoch {epoch + 1:04d} | Loss {losses.nanmean().item():.4f}")
-        # performance.log({"Training loss": losses.nanmean().item()})
-        # performance.log({"mPD cnn1": loss_cnn1.nanmean()})
-        # #performance.log({"loss cnn2": loss_cnn2.mean()})
-        # performance.log({"mPD cnn2": loss_cnn3.nanmean()})
-        #performance.log({"ncc cnn1": ncc1mean.nanmean()})
-        #performance.log({"ncc cnn2": ncc2mean.nanmean()})
+        
 
         if (epoch + 1) % 100 == 0:
             torch.save(
                 {
-                    "model_state_dict1": model.state_dict(),
-                    "model_state_dict2": reg_model1.state_dict(),
+                    "model_state_dict1": regressor.state_dict(),
+                    "model_state_dict2": registration_model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     "epoch": epoch,
@@ -327,12 +258,12 @@ def main(
 ):
 
     device = torch.device("cuda")
-    csv_file_path = f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/{id}_50_vertebrae.csv"
+    csv_file_path = f"/CTAVIX/{id}/{id}_50_vertebrae.csv"
     df = pd.read_csv(csv_file_path)
     fiducials = np.array(df.values)  # Extract as NumPy array
     fiducials = torch.tensor([fiducials]).to(torch.float)
 
-    subject = diffdrr.data.read(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/volume.nii.gz",
+    subject = diffdrr.data.read(f"/CTAVIX/{id}/ct/volume.nii.gz",
                                 orientation="PA", bone_attenuation_multiplier=1, fiducials=fiducials)
     drr = DRR(
         subject,  # A torchio.Subject object storing the CT volume, origin, and voxel spacing
@@ -343,7 +274,7 @@ def main(
         reverse_x_axis=True
     ).to(device)
 
-    subject2 = diffdrr.data.read(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/volume.nii.gz", labelmap = f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/vertebrae.nii.gz",
+    subject2 = diffdrr.data.read(f"/CTAVIX/{id}/ct/volume.nii.gz", labelmap = f"/CTAVIX/{id}/ct/vertebrae.nii.gz",
                                 labels =1, orientation="PA", bone_attenuation_multiplier=30, fiducials=fiducials)
 
     drr_bones = DRR(
@@ -360,7 +291,7 @@ def main(
     df = pd.read_csv(csv_file_path)
     centerline = np.array(df.values)  # Extract as NumPy array
     centerline = torch.tensor([centerline]).to(torch.float)
-    subject_catheter = diffdrr.data.read(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/aorta.nii.gz",
+    subject_catheter = diffdrr.data.read(f"/CTAVIX/{id}/ct/aorta.nii.gz",
                                          orientation="PA", bone_attenuation_multiplier=1, fiducials=centerline)
     drr_catheter= DRR(
         subject_catheter,  # A torchio.Subject object storing the CT volume, origin, and voxel spacing
@@ -370,22 +301,22 @@ def main(
         renderer="trilinear",
         reverse_x_axis=True
     ).to(device)
-    model = regressor_attention()
-    reg_model1 = registration_attention()
+    regressor = regressor_attention()
+    registration_model = registration_attention()
 
     model_dict = torch.load(
-         f"/lustre/fswork/projects/rech/gfu/uur34ii/model/tavi_bones_new_patients_instance_norm/{id}_hu_to_mu_ratio_bones_edges/model_final.pth")
+         f"/BonesHRNet/{id}/model_final.pth")
     bones_model = RegressorDecoderHRNetNew()
 
     bones_model.load_state_dict(model_dict["model_state_dict1"])
     bones_model.to("cuda")
 
 
-    model = model.to(device)
-    reg_model1 = reg_model1.to(device)
+    regressor = regressor.to(device)
+    registration_model = registration_model.to(device)
     optimizer = torch.optim.Adam([
-        {'params': model.parameters(), 'lr': lr},
-        {'params': reg_model1.parameters(), 'lr': lr}])
+        {'params': regressor.parameters(), 'lr': lr},
+        {'params': registration_model.parameters(), 'lr': lr}])
 
 
     scheduler = WarmupCosineSchedule(
@@ -394,7 +325,7 @@ def main(
         n_epochs * n_batches_per_epoch - 5 * n_batches_per_epoch,
     )
 
-    output_path = f"/lustre/fswork/projects/rech/gfu/uur34ii/model/tavi_new_patients_instance_norm/{id}_hu_to_mu_ratio_bones_edges"
+    output_path = f"/cascade/{id}"
     os.makedirs(output_path, exist_ok=True)
 
     transforms = Compose(
@@ -420,7 +351,7 @@ def main(
         same_on_batch=None,
     )
 
-    iso = pd.read_csv(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/isocenter.csv")
+    iso = pd.read_csv(f"/CTAVIX/{id}/isocenter.csv")
     iso = iso[["T8x", "T8y", "T8z"]].to_numpy()
 
     t_iso = np.array([((iso[0][0]-subject.shape[1]/2)*subject.spacing[0]),((iso[0][1]-subject.shape[2]/2)*subject.spacing[1]),((iso[0][2]-subject.shape[3]/2)*subject.spacing[2])], dtype = np.float32)
@@ -428,7 +359,7 @@ def main(
     from data_loader import InstrumentDataset
     from torch.utils.data import Dataset, DataLoader
 
-    dataset = InstrumentDataset(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/instruments_volume")
+    dataset = InstrumentDataset(f"/CTAVIX/{id}/instruments_volume")
 
     loader = DataLoader(
         dataset,
@@ -445,8 +376,8 @@ def main(
     else:
         model_dict = torch.load(
             f"/lustre/fswork/projects/rech/gfu/uur34ii/model/tavi_new_patients/{id}_hu_to_mu_ratio_edges/model_699.pth")
-        model.load_state_dict(model_dict["model_state_dict1"])
-        reg_model1.load_state_dict(model_dict["model_state_dict2"])
+        regressor.load_state_dict(model_dict["model_state_dict1"])
+        registration_model.load_state_dict(model_dict["model_state_dict2"])
         start_epoch = model_dict['epoch']
         optimizer.load_state_dict(model_dict["optimizer_state_dict"])
         for state in optimizer.state.values():
@@ -458,8 +389,8 @@ def main(
 
 
     train(
-        model,
-        reg_model1,
+        regressor,
+        registration_model,
         bones_model,
         optimizer,
         scheduler,
