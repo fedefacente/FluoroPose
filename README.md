@@ -70,6 +70,10 @@ python test_TAVI_multi_patients.py
 ```
 ---
 
+## Pretrained Weights
+
+Pretrained model weights for both datasets are hosted on [Hugging Face](https://huggingface.co/fedefacente/FluoroPose/tree/main).
+
 ## Streamlit annotation app (TAVI)
 
 `tavi_annotation_app/diffdrr_annotation_tavi.py` is a [Streamlit](https://streamlit.io/) app to manually annotate the CT-to-fluoroscopy pose. [DiffDRR](https://github.com/eigenvivek/DiffDRR) renders a DRR from the CT at the pose set by the user, which is compared with the fluoroscopy frame until the vertebrae are aligned.
