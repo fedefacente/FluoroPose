@@ -71,7 +71,7 @@ python test_TAVI_multi_patients.py
 
 ## Pretrained Weights
 
-Pretrained model weights for both datasets are hosted on [Hugging Face](https://huggingface.co/fedefacente/FluoroPose/tree/main).
+Pretrained model weights for CTAVIX dataset are hosted on [Hugging Face](https://huggingface.co/fedefacente/FluoroPose/tree/main).
 
 ## Streamlit annotation app (TAVI)
 
