@@ -11,18 +11,18 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--id", type=str, default="0f7f6475")
 args = parser.parse_args()
 id = args.id
-csv_file_path = f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/points_centerline.csv"
+csv_file_path = f"/CTAVIX/{id}/points_centerline.csv"
 df = pd.read_csv(csv_file_path)
 centerline = np.array(df.values)  # Extract as NumPy array
 centerline = torch.tensor([centerline]).to(torch.float)
-subject_catheter = diffdrr.data.read(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/ventricle.nii.gz",
+subject_catheter = diffdrr.data.read(f"/CTAVIX/{id}/ct/ventricle.nii.gz",
                             orientation="PA", bone_attenuation_multiplier=2, fiducials=centerline)
-subject = diffdrr.data.read(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/aorta.nii.gz",orientation="PA", bone_attenuation_multiplier=2)
+subject = diffdrr.data.read(f"/CTAVIX/{id}/ct/aorta.nii.gz",orientation="PA", bone_attenuation_multiplier=2)
 
 aorta = subject.volume.data
 ventricle = torch.where(subject_catheter.volume.data >0,1, 0)
 device = torch.device("cuda")
-dest_path = f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/instruments_volume"
+dest_path = f"/CTAVIX/{id}/instruments_volume"
 os.makedirs(dest_path, exist_ok=True)
 for i in range(1000):
     print(f"instrument_{i+1}_labels_tg.npy")
