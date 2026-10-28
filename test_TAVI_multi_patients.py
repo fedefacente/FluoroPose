@@ -8,7 +8,6 @@ import h5py
 from diffdrr.pose import convert, axis_angle_to_matrix, matrix_to_axis_angle
 import time
 from torchvision.transforms import Compose, Lambda, Normalize, Resize
-import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from diffdrr.metrics import MultiscaleNormalizedCrossCorrelation2d, DoubleGeodesicSE3
 import cv2
@@ -26,18 +25,7 @@ from pydicom import dcmread
 import tqdm
 from pathlib import Path
 from opt_utils import RegistrarModelTAVI
-import argparse
-import csv
 from scipy.ndimage import distance_transform_edt
-
-def edge_assd(mag_pred, mag_real, pct=90, spacing=(1.,1.)):
-    ep = mag_pred > np.percentile(mag_pred[mag_pred>0], pct)
-    er = mag_real > np.percentile(mag_real[mag_real>0], pct)
-    dt_r = distance_transform_edt(~er, sampling=spacing)
-    dt_p = distance_transform_edt(~ep, sampling=spacing)
-    assd = (dt_r[ep].mean() + dt_p[er].mean())/2
-    hd95 = np.percentile(np.concatenate([dt_r[ep], dt_p[er]]), 95)
-    return assd, hd95   # in mm if spacing is mm/pixel
 
 opt = False
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -45,39 +33,30 @@ print(torch.cuda.is_available())
 mean_absolute_error = nn.L1Loss(reduction='none')
 ncc = MultiscaleNormalizedCrossCorrelation2d([None, 16], [0.5, 0.5]).to(device)
 geodesic = DoubleGeodesicSE3(sdd=1125)
-patients = ["0f7f6475","2bc9e42f","579b5d2f","c2cc4c5b","d27c9be3", "12cc710", "3f9c36fa", "752399da"]
-summary_dir = "/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/summary"
+patients = ["752399da","0f7f6475","12cc710","2bc9e42f","3f9c36fa","579b5d2f","c2cc4c5b","d27c9be3"]
+summary_dir = "/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/summary_ablations"
+os.makedirs(summary_dir, exist_ok=True)
+
 all_metrics = {}
 per_patient_stats = []
 iter_records = []
+dcm_records = []
+
+torch.backends.cudnn.benchmark = True
 for id in patients:
-    try:
-        mtre_tot = []
-        mpd = []
-        alpha = []
-        beta = []
-        gamma = []
-        x = []
-        y = []
-        z = []
-        domain = []
-        ncc_gt = []
-        ncc_fin = []
-        assd_tot = []
-        hd95_tot = []
 
         geodesic_distances = []
         parameterization = "axis_angle"
         convention = None
 
-        datapath = Path(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/fluoro_new")
-        posepath = Path(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/poses")
+        datapath = Path(f"/CTAVIX/{id}/fluoro_new")
+        posepath = Path(f"/CTAVIX/{id}/poses")
 
-        dest_path = os.path.join(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/results_{id}")
+        dest_path = os.path.join(f"CTAVIX/results_{id}")
         os.makedirs(dest_path, exist_ok=True)
 
         model_dict = torch.load(
-            f"/lustre/fswork/projects/rech/gfu/uur34ii/model/tavi_new_patients_instance_norm/{id}_hu_to_mu_ratio_edges_sobel/model_1499.pth")
+            f"/cascade/{id}/model_1499.pth")
         model1 = regressor_attention()
 
         model2 = registration_attention()
@@ -91,27 +70,54 @@ for id in patients:
         model2.eval()
 
         model_dict = torch.load(
-            f"/lustre/fswork/projects/rech/gfu/uur34ii/model/tavi_bones_new_patients_instance_norm/{id}_hu_to_mu_ratio_edges/model_final.pth")
+            f"/BonesHRNet/{id}/model_final.pth")
         model_bones = RegressorDecoderHRNetNew()
 
         model_bones.load_state_dict(model_dict["model_state_dict1"])
         model_bones.to("cuda")
         model_bones.eval()
+        # ===== ONCE, at setup (after model_bones is loaded and .eval()) =====
+        model_bones.eval()
+        torch.backends.cudnn.benchmark = True
 
-        csv_file_path = f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/{id}_50_toracic.csv"
+        static_input = torch.zeros(1, 1, 256, 256, device="cuda")
+
+        # warmup on side stream (required before capture)
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(5):
+                with torch.no_grad():
+                    model_bones(static_input)
+        torch.cuda.current_stream().wait_stream(s)
+
+        bones_graph = torch.cuda.CUDAGraph()  # was: g
+        with torch.cuda.graph(bones_graph):  # was: g
+            with torch.no_grad():
+                static_out = model_bones(static_input)
+
+
+        def run_bones(img):
+            static_input.copy_(img)
+            bones_graph.replay()  # was: g.replay()
+            return static_out
+
+
+
+        csv_file_path = f"/CTAVIX/{id}/{id}_50_toracic.csv"
         df = pd.read_csv(csv_file_path)
         fiducials = np.array(df.values)
         fiducials = torch.tensor([fiducials]).to(torch.float)
         subject = diffdrr.data.read(
-            f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/volume.nii.gz",
-            labelmap=f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/aorta_leaflets.nii.gz",
-            orientation="PA", bone_attenuation_multiplier=1, fiducials=fiducials)
+            f"/CTAVIX/{id}/ct/volume.nii.gz",
+            labelmap=f"/CTAVIX/{id}/ct/aorta_leaflets.nii.gz",
+            orientation="PA", bone_attenuation_multiplier=2, fiducials=fiducials)
 
-        subject2 = diffdrr.data.read(f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/volume.nii.gz",
+        subject2 = diffdrr.data.read(f"/CTAVIX/{id}/ct/volume.nii.gz",
                                      labelmap=f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/ct/vertebrae.nii.gz",
                                      labels=1, orientation="PA", bone_attenuation_multiplier=1, fiducials=fiducials)
         iso = pd.read_csv(
-            f"/lustre/fswork/projects/rech/gfu/uur34ii/data/TAVI/{id}/isocenter.csv")
+            f"/CTAVIX/{id}/isocenter.csv")
         iso = iso[["T8x", "T8y", "T8z"]].to_numpy()
 
         t_iso = np.array([((iso[0][0] - subject.shape[1] / 2) * subject.spacing[0]),
@@ -120,13 +126,14 @@ for id in patients:
 
         with (torch.no_grad()):
             for pose_file in tqdm.tqdm(posepath.glob("*_pose.pt")):
+                # if pose_file.stem.replace("_pose", "") != "752399da_XA_SER001_IMG000015":
+                #     continue
                 img_name = pose_file.stem.replace("_pose", "") + ".dcm"
                 img_path = datapath / img_name
                 print(img_path)
                 pose = torch.load(pose_file)
                 ds = dcmread(img_path)
                 width, height = 256, 256
-                fps = 10
                 for i, frame in enumerate(ds.pixel_array):
                     import gc
 
@@ -180,6 +187,7 @@ for id in patients:
                     img += 1
                     img = img.max().log() - img.log()
                     img = transforms(img).to(device)
+                    img_plot = img
                     drr = DRR(
                         subject,
                         sdd=sdd,
@@ -224,11 +232,15 @@ for id in patients:
                     gt_pose = transforms(gt_pose)
                     img = transforms(img)
 
-                    time_i = time.time()
-                    _, _, bones = model_bones(img)
-                    bones_sobel = sobel(bones)
+                    torch.cuda.synchronize()
 
-                    _, _, bones_from_drr = model_bones(gt_pose)
+                    time_i = time.time()
+
+                    _, _, bones = run_bones(img)
+                    bones = bones.clone()
+
+                    # bones= transforms(bones)
+                    bones_sobel = sobel(bones)
 
                     r, t = model1(bones_sobel)
 
@@ -239,16 +251,27 @@ for id in patients:
                     init_pose = transforms(init_pose.sum(dim=1, keepdim=True))
                     init_pose_sobel = sobel(init_pose)
 
-                    bones_gt = drr2(pose)
-                    bones_gt = transforms(bones_gt.sum(dim=1, keepdim=True))
-
                     input2 = torch.cat((bones_sobel.detach(), init_pose_sobel), dim=1)
 
                     mpd_iters_tot, mtre_iters_tot = [], []
-
+                    alpha = []
+                    beta = []
+                    gamma = []
+                    x = []
+                    y = []
+                    z = []
+                    time_tot = []
                     for iter in range(1):
                         print(iter)
+                        torch.cuda.synchronize()
+                        time_i_iter = time.time()
                         delta_r, delta_t = model2(input2)
+
+                        if iter == 0:
+                            torch.cuda.synchronize()
+                            time_f = time.time() - time_i
+                            time_tot.append(float(time_f))
+
                         delta_pose = convert(delta_r, delta_t, parameterization=parameterization, convention=convention)
                         pose_pred = pose_pred.compose(delta_pose)
 
@@ -256,6 +279,12 @@ for id in patients:
                         init_pose = transforms(init_pose.sum(dim=1, keepdim=True))
                         init_pose_sobel = sobel(init_pose)
                         input2 = torch.cat((bones_sobel.detach(), init_pose_sobel), dim=1)
+                        time_f_iter = time.time() - time_i_iter
+
+                        if iter != 0:
+                            torch.cuda.synchronize()
+                            time_f = time_f +time_f_iter
+                            time_tot.append(float(time_f))
 
                         # --- metrics per iteration ---
                         points2d = drr.perspective_projection(pose, subject.fiducials.cuda())
@@ -273,56 +302,52 @@ for id in patients:
                         p2p[~mask2d] = float('nan')
                         mpd_i = ((p2 - p2p).norm(dim=-1).nanmean()) * p_target
 
-                        p3 = pose(subject.fiducials.cuda())
-                        p3p = pose_pred(subject.fiducials.cuda())
-                        p3[~mask3d] = float('nan')
-                        p3p[~mask3d] = float('nan')
+                        p3 = pose.inverse()(subject.fiducials.cuda())
+                        p3p = pose_pred.inverse()(subject.fiducials.cuda())
+                        # p3[~mask3d] = float('nan')
+                        # p3p[~mask3d] = float('nan')
                         mtre_i = (p3 - p3p).norm(dim=-1).nanmean()
 
                         mpd_iters_tot.append(float(mpd_i.detach().cpu()))
                         mtre_iters_tot.append(float(mtre_i.detach().cpu()))
 
-                    for it, (m, t) in enumerate(zip(mpd_iters_tot, mtre_iters_tot)):
-                        iter_records.append({"patient": id, "iter": it, "mpd": m, "mtre": t})
+                        #### Parameters error ####
+                        M = pose_pred.rotation
+                        angles_pred = diffdrr.pose.matrix_to_euler_angles(M, convention="ZXY") * (180.0 / torch.pi)
+                        angles_GT = diffdrr.pose.matrix_to_euler_angles(pose.rotation, convention="ZXY") * (180.0 / torch.pi)
+                        R_T = pose.rotation.transpose(1, 2)
+                        R_p = pose_pred.rotation.transpose(1, 2)
+                        T = torch.einsum("bij, bj -> bi", R_p, pose_pred.translation)
+                        gt_t = torch.einsum("bij, bj -> bi", R_T, pose.translation)
+                        alpha.append(float(mean_absolute_error(angles_pred.detach().cpu()[:, 0], angles_GT.detach().cpu()[:, 0]).mean()))
+                        beta.append(float(mean_absolute_error(angles_pred.detach().cpu()[:, 1], angles_GT.detach().cpu()[:, 1]).mean()))
+                        gamma.append(float(mean_absolute_error(angles_pred.detach().cpu()[:, 2], angles_GT.detach().cpu()[:, 2]).mean()))
+                        x.append(float(mean_absolute_error(T.detach().cpu()[:, 0], gt_t.detach().cpu()[:, 0]).mean()))
+                        y.append(float(mean_absolute_error(T.detach().cpu()[:, 1], gt_t.detach().cpu()[:, 1]).mean()))
+                        z.append(float(mean_absolute_error(T.detach().cpu()[:, 2], gt_t.detach().cpu()[:, 2]).mean()))
+
+                    for it, (m,t,a,b,g,tx,ty,tz,ti) in enumerate(zip(mpd_iters_tot, mtre_iters_tot, alpha, beta, gamma, x, y, z, time_tot)):
+                        iter_records.append({"patient": id, "iter": it, "mpd": m, "mtre": t, "alpha": a, "beta": b, "gamma": g, "tx": tx, "ty": tz, "tz":ty,"time":ti})
 
                     if opt == True:
                         with torch.enable_grad():
                             gt, _, _, _, pose_pred = opt_model.run(init_pose=pose_pred, gt=img, beta=0.5)
-                    bones_pred = init_pose
-                    R_p = pose_pred.rotation.transpose(1, 2)
-                    T = torch.einsum("bij, bj -> bi", R_p, pose_pred.translation)
 
-                    time_f = time.time()
 
-                    points2d = drr.perspective_projection(pose, subject.fiducials.cuda())
-                    points2d_pred = drr.perspective_projection(pose_pred, subject.fiducials.cuda())
-                    mask1 = (points2d_pred[:, :, 0] >= 0) & (points2d_pred[:, :, 0] <= width) & (
-                                points2d_pred[:, :, 1] >= 0) & (
-                                    points2d_pred[:, :, 1] <= height)
-                    mask2 = (points2d[:, :, 0] >= 0) & (points2d[:, :, 0] <= width) & (points2d[:, :, 1] >= 0) & (
-                            points2d[:, :, 1] <= height)
+                    print(mpd_i.cpu().detach().numpy().round(2))
+                    print(mtre_i.squeeze().detach().cpu().numpy().round(2))
 
-                    mask = mask1 & mask2
+                    dcm_records.append({
+                        "pt_id": id,
+                        "dcm_name": img_name,
+                        "mpd": float(mpd_i.detach().cpu()),
+                        "mtre": float(mtre_i.nanmean().detach().cpu()),
+                    })
 
-                    mask2d = mask.unsqueeze(-1).expand_as(points2d_pred)
-                    mask3d = mask.unsqueeze(-1).expand_as(subject.fiducials.cuda())
-
-                    points2d_pred[~mask2d] = float('nan')
-                    points2d[~mask2d] = float('nan')
-                    mpd2 = ((points2d - points2d_pred).norm(dim=-1).nanmean()) * p_target
-                    print(mpd2.cpu().detach().numpy().round(2))
-                    mpd.append(mpd2.nanmean().detach().cpu().numpy())
-                    points3d = pose(subject.fiducials.cuda())
-                    points3d_pred = pose_pred(subject.fiducials.cuda())
-                    points3d_pred[~mask3d] = float('nan')
-                    points3d[~mask3d] = float('nan')
-                    mtre = (points3d - points3d_pred).norm(dim=-1).nanmean(dim=-1)
-                    print(mtre.squeeze().detach().cpu().numpy().round(2))
-                    mtre_tot.append(mtre.nanmean().detach().cpu().numpy())
-
-                    _, _, double = geodesic(pose, pose_pred)
 
                     final_pose = drr(pose_pred, mask_to_channels=True)  # (1, C, H, W)
+                    final_pose_plot = drr(pose_pred)
+                    final_pose_plot =transforms(final_pose_plot)
                     fp = final_pose[0, 1:].detach().cpu().numpy()  # (C, H, W)
                     CHANNEL_COLORS = {
                         0: np.array([0.0, 0.0, 1.0]),  # aorta - blue
@@ -331,7 +356,7 @@ for id in patients:
                         3: np.array([1.0, 1.0, 0.0]),  # rcc   - yellow
                     }
 
-                    rgb_fluoro = np.stack([1 - img[0].squeeze(0).squeeze(0).detach().cpu()] * 3, axis=-1)
+                    rgb_fluoro = np.stack([1 - img_plot[0].squeeze(0).squeeze(0).detach().cpu()] * 3, axis=-1)
 
                     cusps = np.zeros_like(rgb_fluoro)  # (H, W, 3)
                     cusp_mask = np.zeros(rgb_fluoro.shape[:2], dtype=bool)
@@ -366,152 +391,72 @@ for id in patients:
                     bones = transforms(bones)
                     rgb_bones[:, :, 0] = bones.squeeze(0).squeeze(0).detach().cpu() * 0.8
                     rgb_bones[:, :, 1] = init_pose.squeeze(0).squeeze(0).detach().cpu()
-                    assd_i, hd95_i = edge_assd(bones_sobel.squeeze(0).squeeze(0).detach().cpu().numpy(),init_pose_sobel.squeeze(0).squeeze(0).detach().cpu().numpy(), spacing=(p_target,p_target))
-                    assd_tot.append(assd_i)
-                    hd95_tot.append(hd95_i)
-                    print(img.shape)
+
                     plt.figure(figsize=(12, 4))
-                    plt.subplot(151)
+                    plt.subplot(141)
                     plt.grid(False)
-                    plt.title("Fluoroscopy")
-                    plt.imshow(1 - img[0].squeeze(0).squeeze(0).detach().cpu(), cmap='gray')
+                    plt.title("Target fluoroscopy")
+                    plt.imshow(1 - img_plot[0].squeeze(0).squeeze(0).detach().cpu(), cmap='gray')
                     plt.axis('off')
 
-                    plt.subplot(152)
+                    plt.subplot(142)
                     plt.grid(False)
-                    plt.title("bones pred")
-                    plt.imshow(init_pose[0].squeeze(0).squeeze(0).detach().cpu(), cmap='gray')
+                    plt.title("DRR Ppred")
+                    plt.imshow(1- final_pose_plot[0].squeeze(0).squeeze(0).detach().cpu(), cmap='gray')
+                    plt.scatter(p2.squeeze()[:, 0].detach().cpu().numpy(),
+                                p2.squeeze()[:, 1].detach().cpu().numpy(),
+                                c='fuchsia', s=160, alpha=1, marker='o')
+                    plt.scatter(p2p.squeeze()[:, 0].detach().cpu().numpy(),
+                                p2p.squeeze()[:, 1].detach().cpu().numpy(),
+                                c='lime', s=160, alpha=1, marker='x', linewidths=3)
                     plt.axis('off')
 
-                    plt.subplot(153)
-                    plt.grid(False)
-                    plt.title("bones from fluoro")
-                    plt.imshow(bones[0].squeeze(0).squeeze(0).detach().cpu(), cmap='gray')
-                    plt.axis('off')
-
-                    plt.subplot(154)
+                    plt.subplot(143)
                     plt.grid(False)
                     plt.title("Bones DiffMap")
                     plt.imshow(rgb_bones)
                     plt.axis('off')
 
-                    plt.subplot(155)
+                    plt.subplot(144)
                     plt.grid(False)
                     plt.title("Aorta projection")
                     plt.imshow(rgb_fluoro)
                     plt.axis('off')
-
-                    plt.savefig(os.path.join(dest_path, img_name + f"_{i}.png"))
+                    plt.subplots_adjust(wspace=0.05, hspace=0, left=0, right=1, top=0.95, bottom=0)
+                    # plt.savefig(os.path.join(dest_path, img_name + f"_{i}.png"),
+                    #             bbox_inches='tight', pad_inches=0)
                     plt.close()
 
-                    del final_pose, init_pose, img, input2, bones, bones_gt
-                    #### Parameters error
-                    M = pose_pred.rotation
-                    angles_pred = diffdrr.pose.matrix_to_euler_angles(M, convention="ZXY") * (180.0 / torch.pi)
-                    angles_GT = diffdrr.pose.matrix_to_euler_angles(pose.rotation, convention="ZXY") * (180.0 / torch.pi)
-                    R_T = pose.rotation.transpose(1, 2)
-                    R_p = pose_pred.rotation.transpose(1, 2)
-                    T = torch.einsum("bij, bj -> bi", R_p, pose_pred.translation)
-                    print(diffdrr.pose.matrix_to_euler_angles(pose_pred.rotation, convention="ZXY"))
-                    print(T)
-                    gt_t = torch.einsum("bij, bj -> bi", R_T, pose.translation)
-                    print(diffdrr.pose.matrix_to_euler_angles(pose.rotation, convention="ZXY"))
-                    print(gt_t)
-                    alpha.append(
-                        mean_absolute_error((angles_pred).detach().cpu()[:, 0], angles_GT.detach().cpu()[:, 0]).tolist())
-                    print(mean_absolute_error((angles_pred).detach().cpu()[:, 0], angles_GT.detach().cpu()[:, 0]).tolist())
-                    beta.append(
-                        mean_absolute_error((angles_pred).detach().cpu()[:, 1], angles_GT.detach().cpu()[:, 1]).tolist())
-                    print(mean_absolute_error((angles_pred).detach().cpu()[:, 1], angles_GT.detach().cpu()[:, 1]).tolist())
-                    gamma.append(
-                        mean_absolute_error((angles_pred).detach().cpu()[:, 2], angles_GT.detach().cpu()[:, 2]).tolist())
-                    x.append(mean_absolute_error(T.detach().cpu()[:, 0], gt_t.detach().cpu()[:, 0]).tolist())
-                    y.append(mean_absolute_error(T.detach().cpu()[:, 1], gt_t.detach().cpu()[:, 1]).tolist())
-                    z.append(mean_absolute_error(T.detach().cpu()[:, 2], gt_t.detach().cpu()[:, 2]).tolist())
-                    geodesic_distances.append(double.detach().cpu())
+                    del final_pose, init_pose, img, input2, bones
 
-        alpha = np.concatenate(alpha)
-        beta = np.concatenate(beta)
-        gamma = np.concatenate(gamma)
-        x = np.concatenate(x)
-        y = np.concatenate(y)
-        z = np.concatenate(z)
-        geodesic_distances = np.concatenate(geodesic_distances)
-        assd_tot = np.concatenate(assd_tot)
-        hd95_tot = np.concatenate(hd95_tot)
-        metrics = {
-            "mPD": np.array(mpd),
-            "mTRE": np.array(mtre_tot),
-            "alpha": alpha, "beta": beta, "gamma": gamma,
-            "x": x, "y": y, "z": z,
-            "geodesic_distance": geodesic_distances,
-            "assd": assd_tot,"hd95_tot": hd95_tot,
-        }
-        all_metrics[id] = metrics
 
-        # per-patient stats
-        row = {"patient": id}
-        for name, arr in metrics.items():
-            row[f"{name}_mean"] = np.nanmean(arr)
-            row[f"{name}_median"] = np.nanmedian(arr)
-            row[f"{name}_std"] = np.nanstd(arr)
-            row[f"{name}_iqr"] = np.nanpercentile(arr, 75) - np.nanpercentile(arr, 25)
-        per_patient_stats.append(row)
-
-        # save raw arrays + stats for this patient
-        np.savez(os.path.join(dest_path, f"{id}_metrics.npz"), **metrics)
-        pd.DataFrame([row]).to_csv(os.path.join(dest_path, f"{id}_stats.csv"), index=False)
-
-    except Exception as e:
-        print(f"[skip] {id}: {e}")
-        continue
-
-# ---- after the patient loop: aggregate ----
-
-os.makedirs(summary_dir, exist_ok=True)
-
-per_patient_df = pd.DataFrame(per_patient_stats)
-per_patient_df.to_csv(os.path.join(summary_dir, "per_patient_stats.csv"), index=False)
-
-# pooled across all frames of all patients
-if not all_metrics:
-    raise RuntimeError("all_metrics is empty - every patient was skipped. Check the [skip] messages above.")
-
-first_key = list(all_metrics.keys())[0]
-metric_names = list(all_metrics[first_key].keys())
-pooled = {name: np.concatenate([all_metrics[p][name] for p in all_metrics])
-          for name in metric_names}
-
-pooled_rows = []
-for name, arr in pooled.items():
-    pooled_rows.append({
-        "metric": name,
-        "mean": np.nanmean(arr),
-        "median": np.nanmedian(arr),
-        "std": np.nanstd(arr),
-        "iqr": np.nanpercentile(arr, 75) - np.nanpercentile(arr, 25),
-        "n": np.sum(~np.isnan(arr)),
-    })
-pooled_df = pd.DataFrame(pooled_rows)
-pooled_df.to_csv(os.path.join(summary_dir, "pooled_stats.csv"), index=False)
-
-# mean-of-per-patient-medians (equal weight per patient, not per frame)
-patient_median_cols = [c for c in per_patient_df.columns if c.endswith("_median")]
-across_patients = per_patient_df[patient_median_cols].agg(["mean", "median", "std"])
-across_patients.to_csv(os.path.join(summary_dir, "across_patient_stats.csv"))
+#
 iter_df = pd.DataFrame(iter_records)
+iter_df.to_csv(os.path.join(summary_dir, "all_metrics_final.csv"))
 
-# step 1: one value per (patient, iter) — median over that patient's frames
-per_patient_iter = (iter_df.groupby(["patient", "iter"])[["mpd", "mtre"]]
-                    .median().reset_index())
+# step 1: one value per (patient, iter) — mean over that patient's frames
+per_patient_iter = (iter_df.groupby(["patient", "iter"])[["mpd", "mtre", "alpha", "beta","gamma", "tx", "ty", "tz","time"]]
+                    .mean().reset_index())
 
 # step 2: median (and spread) across patients, per iter
 iter_summary = per_patient_iter.groupby("iter").agg(
-    mpd_median=("mpd", "median"),
+    mpd_mean=("mpd", "mean"),
     mpd_std=("mpd", "std"),
-    mtre_median=("mtre", "median"),
+    mtre_mean=("mtre", "mean"),
     mtre_std=("mtre", "std"),
+    alpha_mean=("alpha", "mean"),
+    alpha_std=("alpha", "std"),
+    beta_mean=("beta", "mean"),
+    beta_std=("beta", "std"),
+    gamma_mean=("gamma", "mean"),
+    gamma_std=("gamma", "std"),
+    tx_mean=("tx", "mean"),
+    tx_std=("tx", "std"),
+    ty_mean=("ty", "mean"),
+    ty_std=("ty", "std"),
+    tz_mean=("tz", "mean"),
+    tz_std=("tz", "std"),
+    time_mean=("time", "mean"),
+    time_std=("time", "std"),
 )
-iter_summary.to_csv(os.path.join(summary_dir, "iter_summary.csv"))
-print(pooled_df.to_string(index=False))
-print(across_patients.to_string())
+iter_summary.to_csv(os.path.join(summary_dir, "summary_final.csv"))
