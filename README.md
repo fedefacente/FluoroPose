@@ -45,14 +45,13 @@ Training data are synthesized from a CT volume in four steps:
 
 ---
 
-## Installation
-
-
----
-
 ## Usage
-
-Suggested order for a full run:
+### Set up the environment
+- `conda create -n lxpose python=3.12.4`
+- `conda activate fluoropose`
+- `pip install -r requirements.txt`
+- 
+### Suggested order for a full run:
 
 ```bash
 
