@@ -115,7 +115,6 @@ def train(
         losses = []
         loss_cnn1 = []
         loss_cnn2 = []
-        losses_val = []
     
         regressor.train()
         registration_model.train()
@@ -212,7 +211,7 @@ def train(
             mpd2 = ((points2d - points2d_pred).norm(dim=-1).nanmean()) * (0.4*512/256)
 
             del img
-            loss = ( (mpd2.nanmean())) + ((mpd1.nanmean())) #+ ( (geodesic1.nanmean())) + ((geodesic2.nanmean())) #+ loss_bones.nanmean()
+            loss = ( (mpd2.nanmean())) + ((mpd1.nanmean()))
             optimizer.zero_grad()
             loss.mean().backward()
             adaptive_clip_grad_(bones_model.parameters())
