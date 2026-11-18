@@ -11,8 +11,8 @@ Learning-based 3D/2D registration of a preoperative CT to intraoperative X-Ray f
 ![Spine registration pipeline](assets/pipeline_full.png)
 
 - **BonesHRNet.** An HRNet-based network predicts a bones representation image from the input X-ray, trained with a gradient-NCC loss (`L_gradNCC`) against the bone DRR.
-- **Pose regressor.** Regresses an initial pose `P_init` from the predicted bone representation image, trained with a mean projection distance loss (`L_mPD₁`) against `P_GT`.
-- **Registration model.** Takes the predicted bones and the DRR at `P_init`, and regresses a pose correction `P_Δ`, trained with `L_mPD₂`. The final pose is `P̂`, obtained by composing `P_init` with `P_Δ`.
+- **Pose regressor.** Regresses an initial pose `P_init` from the predicted bones representation image, trained with a mean projection distance loss (`L_mPD₁`) against `P_GT`.
+- **Registration model.** Takes the predicted bones representation and the bones representation generated at `P_init`, and regresses a pose correction `P_Δ`, trained with `L_mPD₂`. The final pose is `P̂`, obtained by composing `P_init` with `P_Δ`.
 
 ### TAVI: DRR generation with simulated instruments
 
@@ -52,7 +52,7 @@ Training data are synthesized from a CT volume in four steps:
 - `conda create -n lxpose python=3.12.4`
 - `conda activate fluoropose`
 - `pip install -r requirements.txt`
-- 
+  
 ### Suggested order for a full run:
 
 ```bash
